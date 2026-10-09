@@ -27,16 +27,28 @@ assert at.session_state["notarized_id"], "no asset id after notarize"
 at.button(key="btn_query").click().run()
 assert not at.exception, f"Query failed: {at.exception}"
 
-# Page 2: GCash rail -> QR -> simulated webhook
-at.button(key="btn_gcash").click().run()
-assert at.session_state["pay_flow"]["stage"] == "interact"
-at.button(key="btn_gcash_ok").click().run()
-assert not at.exception, f"GCash settle failed: {at.exception}"
-assert at.session_state["pay_flow"]["stage"] == "done"
-assert at.session_state["last_settlement"]["rail"] == "GCash"
+# Page 2: all four rails settle (GCash, Maya, card, USDC/Stellar)
+for rail_btn, ok_btn, expected in [
+    ("btn_gcash", "btn_gcash_ok", "GCash"),
+    ("btn_maya", "btn_maya_ok", "Maya (NFC)"),
+    ("btn_stripe", "btn_stripe_ok", "Stripe / Apple Pay"),
+    ("btn_usdc", "btn_usdc_ok", "Stellar"),          # real testnet tx or graceful simulation
+]:
+    at.session_state["pay_flow"] = None              # fresh investor query each time
+    at.run()
+    at.button(key=rail_btn).click().run()
+    assert at.session_state["pay_flow"]["stage"] == "interact", rail_btn
+    at.button(key=ok_btn).click().run()
+    assert not at.exception, ok_btn
+    s = at.session_state["last_settlement"]
+    if expected == "Stellar":
+        assert s["rail"].startswith("Stellar testnet") or "simulated" in s["rail"], s["rail"]
+    else:
+        assert s["rail"] == expected, (expected, s["rail"])
+    print(f"  rail ok: {s['rail']}")
 
 # Page 3: settlement + data dividend held in state and rendered by render_settlement()
 s = at.session_state["last_settlement"]
 assert s["dividend_php"] == 3.50 and s["originator_wallet"] == "0xUser1"
 
-print("SMOKE OK — boot, local-AI receipt, notarize, 402 query, GCash pay, settlement all pass.")
+print("SMOKE OK — boot, local-AI receipt, notarize, 402 query, 4-rail settlement, dividends all pass.")

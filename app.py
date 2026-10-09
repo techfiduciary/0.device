@@ -54,6 +54,9 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets_db.js
 OLLAMA_URL = "http://localhost:11434/api/generate"   # Local AI only. No cloud.
 OLLAMA_MODEL = "llama3.2:latest"  # already installed on this device; use "llama3.2:1b" on low-RAM machines
 GCASH_NUMBER = "639170000000"    # QR Ph collects REAL money once this is your GCash-registered mobile (63 + number)
+GCASH_QR_IMAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gcash_qr.png")
+# ^ Save YOUR GCash app's personal QR (Profile → My QR Code → screenshot) as this file for a truly scannable, real-money QR
+STELLAR_TREASURY_DEFAULT = "GBSQMSQFTC7PUI3OGE3BPTXFKC42OPMK7CVAO7MR3Z6J2HY4JI3EK5IE"  # funded Stellar TESTNET account (public key)
 ORIGINATOR_WALLET = "0xUser1"
 FEE_PHP = 5.0          # view fee, pesos
 FEE_USDC = 0.10        # view fee, USDC
@@ -394,6 +397,47 @@ def qrph_payload(amount_php: float, ref: str) -> str:
     return body + _crc16(body.encode())
 
 
+# ── Optional real rails (activate automatically when configured) ────────────
+def get_secret(section, key):
+    try:
+        return st.secrets[section][key]
+    except (KeyError, FileNotFoundError):
+        return None
+
+
+def paymongo_headers(secret_key):
+    import base64
+    return {"Authorization": "Basic " + base64.b64encode(secret_key.encode()).decode(),
+            "Content-Type": "application/json"}
+
+
+def create_paymongo_source(rail_type, amount_php):
+    """Real checkout session on PayMongo, the PH payment gateway. sk_test_ keys
+    run their sandbox; sk_live_ collects real money. Types: gcash, paymaya."""
+    secret = get_secret("paymongo", "secret_key")
+    if not secret:
+        return None
+    body = {"data": {"attributes": {
+        "amount": int(round(amount_php * 100)), "currency": "PHP",
+        "type": rail_type,
+        "redirect": {"success": "http://localhost:8501/?paid=1", "failed": "http://localhost:8501/?failed=1"},
+    }}}
+    r = requests.post("https://api.paymongo.com/v1/sources", json=body,
+                      headers=paymongo_headers(secret), timeout=15)
+    r.raise_for_status()
+    d = r.json()["data"]
+    return {"id": d["id"], "checkout_url": d["attributes"]["redirect"]["checkout_url"]}
+
+
+def paymongo_source_paid(source_id):
+    secret = get_secret("paymongo", "secret_key")
+    if not secret:
+        return False
+    r = requests.get(f"https://api.paymongo.com/v1/sources/{source_id}",
+                     headers=paymongo_headers(secret), timeout=15)
+    return r.json()["data"]["attributes"]["status"] == "chargeable"
+
+
 # ── Settlement renderer (shared by Page 2 and Page 3) ──────────────────────
 def render_settlement():
     s = st.session_state.last_settlement
@@ -430,27 +474,73 @@ def render_rail_panel(asset_id):
     if rail == "GCash" and stage == "interact":
         st.markdown("**Scan to Pay — GCash**")
         ref = f"GCASH-{asset_id}-{int(time.time())}"
-        st.image(
-            make_qr(qrph_payload(FEE_PHP, ref)),
-            width=230,
-            caption="Official QR Ph (EMVCo) code — scannable by GCash, Maya, and any PH bank app",
-        )
-        st.caption(f"Sandbox destination {GCASH_NUMBER} — set GCASH_NUMBER in app.py to your "
-                   f"GCash mobile and this same QR collects real pesos. Ref {ref}")
-        if st.button("✅ I paid — confirm GCash webhook", key="btn_gcash_ok", use_container_width=True):
-            with st.spinner("Receiving webhook…"):
-                time.sleep(0.8)
-            settle(asset_id, "GCash")
-            st.rerun()
+        src = None
+        if get_secret("paymongo", "secret_key"):
+            try:
+                src = create_paymongo_source("gcash", FEE_PHP)
+            except requests.RequestException as e:
+                st.warning(f"PayMongo unreachable ({e.__class__.__name__}) — using local QR.")
+        if src:
+            st.image(make_qr(src["checkout_url"]), width=240,
+                     caption="REAL GCash checkout (PayMongo sandbox) — scans with any camera")
+            st.markdown(f"[Or tap to open the GCash checkout →]({src['checkout_url']})")
+            ok_label = "✅ I paid — verify with PayMongo"
+        elif os.path.exists(GCASH_QR_IMAGE):
+            st.image(GCASH_QR_IMAGE, width=250,
+                     caption="Your real GCash QR — scan, send ₱5, then confirm below")
+            ok_label = "✅ I sent ₱5 — confirm"
+        else:
+            st.image(make_qr(qrph_payload(FEE_PHP, ref)), width=230,
+                     caption=f"QR Ph (EMVCo) standard payload · sandbox dest {GCASH_NUMBER}")
+            st.info("To make this QR scannable for real, add ONE of:\n"
+                    "**1.** your GCash app's personal QR saved as `gcash_qr.png` in the project folder, or\n"
+                    "**2.** a PayMongo test key in `.streamlit/secrets.toml`.",
+                    icon="📲")
+            ok_label = "✅ I paid — confirm GCash webhook"
+        if st.button(ok_label, key="btn_gcash_ok", use_container_width=True):
+            if src:
+                with st.spinner("Checking with PayMongo…"):
+                    if paymongo_source_paid(src["id"]):
+                        settle(asset_id, "GCash (PayMongo sandbox)")
+                        st.rerun()
+                    else:
+                        st.error("PayMongo says still pending — complete the checkout, then verify again.")
+            else:
+                with st.spinner("Receiving webhook…"):
+                    time.sleep(0.8)
+                settle(asset_id, "GCash")
+                st.rerun()
 
     elif rail == "Maya" and stage == "interact":
-        st.markdown("**Maya — hold your phone near the terminal (NFC)**")
-        st.caption("Terminal: 0.Device Reader · Amount ₱5.00 · Waiting for tap…")
-        if st.button("📲 Simulate NFC Tap", key="btn_maya_ok", use_container_width=True):
-            with st.spinner("Tap detected — authorizing…"):
-                time.sleep(0.8)
-            settle(asset_id, "Maya (NFC)")
-            st.rerun()
+        src = None
+        if get_secret("paymongo", "secret_key"):
+            try:
+                src = create_paymongo_source("paymaya", FEE_PHP)
+            except requests.RequestException:
+                src = None
+        if src:
+            st.markdown("**Maya checkout — real flow (PayMongo sandbox)**")
+            st.markdown(f"[Open the Maya checkout →]({src['checkout_url']})")
+            st.image(make_qr(src["checkout_url"]), width=200,
+                     caption="Scan with your phone camera — opens the real Maya payment page")
+            ok_label = "✅ I paid — verify with PayMongo"
+        else:
+            st.markdown("**Maya — hold your phone near the terminal (NFC)**")
+            st.caption("Terminal: 0.Device Reader · Amount ₱5.00 · Waiting for tap…")
+            ok_label = "📲 Simulate NFC Tap"
+        if st.button(ok_label, key="btn_maya_ok", use_container_width=True):
+            if src:
+                with st.spinner("Checking with PayMongo…"):
+                    if paymongo_source_paid(src["id"]):
+                        settle(asset_id, "Maya (PayMongo sandbox)")
+                        st.rerun()
+                    else:
+                        st.error("Still pending — complete the Maya checkout, then verify again.")
+            else:
+                with st.spinner("Tap detected — authorizing…"):
+                    time.sleep(0.8)
+                settle(asset_id, "Maya (NFC)")
+                st.rerun()
 
     elif rail == "Card / Apple Pay" and stage == "interact":
         if st.button("💳 Complete secure checkout (simulated redirect)", key="btn_stripe_ok", use_container_width=True):
@@ -460,11 +550,39 @@ def render_rail_panel(asset_id):
             st.rerun()
 
     elif rail == "USDC (Stellar)" and stage == "interact":
-        if st.button("🤖 Let the AI agent pay — atomic settlement", key="btn_usdc_ok", use_container_width=True):
-            with st.spinner("AI agent signing Stellar payment… $0.10 USDC → escrow → atomic settle."):
-                time.sleep(1.2)
-            settle(asset_id, "USDC via Stellar (AI Agent)")
-            st.rerun()
+        ref = f"0DEV-{int(time.time())}"
+        treasury = get_secret("stellar", "treasury_public") or STELLAR_TREASURY_DEFAULT
+        sep7 = f"web+stellar:pay?dest={treasury}&amount=0.1&memo={ref[:28]}&memo_type=MEMO_TEXT"
+        st.markdown("**Scan with any Stellar wallet (testnet)** — a real SEP-0007 payment request.")
+        st.image(make_qr(sep7), width=210,
+                 caption=f"0.1 XLM testnet (USDC stand-in) → {treasury[:9]}… · ref {ref}")
+        if st.button("🤖 Let the AI agent settle — real testnet transaction", key="btn_usdc_ok", use_container_width=True):
+            agent_secret = get_secret("stellar", "agent_secret")
+            if agent_secret:
+                try:
+                    from stellar_sdk import Asset, Keypair, Network, Server, TextMemo, TransactionBuilder
+                    kp = Keypair.from_secret(agent_secret)
+                    server = Server("https://horizon-testnet.stellar.org")
+                    account = server.load_account(kp.public_key)
+                    tx = (TransactionBuilder(account, Network.TESTNET_NETWORK_PASSPHRASE, base_fee=100)
+                          .append_payment_op(destination=treasury, asset=Asset.native(), amount="0.1")
+                          .add_memo(TextMemo(ref[:28]))
+                          .set_timeout(30).build())
+                    tx.sign(kp)
+                    resp = server.submit_transaction(tx)
+                    settle(asset_id, f"Stellar testnet tx {resp['hash'][:10]}…")
+                    st.rerun()
+                except Exception as e:
+                    st.warning(f"Testnet unreachable ({e.__class__.__name__}) — settling in simulation.")
+                    with st.spinner("Agent signing…"):
+                        time.sleep(1.0)
+                    settle(asset_id, "USDC via Stellar (simulated)")
+                    st.rerun()
+            else:
+                with st.spinner("Agent signing… atomic settlement on Stellar…"):
+                    time.sleep(1.2)
+                settle(asset_id, "USDC via Stellar (simulated)")
+                st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

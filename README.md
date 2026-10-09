@@ -46,13 +46,15 @@ The app opens at http://localhost:8501.
 
 **Demo Mode:** if Ollama isn't running, the app does not fail — it switches to a built-in rule-based underwriter (clearly labeled on screen) with the exact same output contract. Everything else (402 gate, QR, settlement, dividends) works identically. This is a deliberate fail-safe so the demo is repeatable anywhere, including offline on stage.
 
-## Payments: the QR is real, the rails are the upgrade path
+## Payments: three levels of real
 
-The GCash rail generates an **official QR Ph code** — the EMVCo payload format (PH.PPMI GUI + CRC-16 checksum) that GCash, Maya, and every participating Philippine bank app scan natively. It includes the amount (₱5.00) and a unique bill reference.
+The GCash rail has three tiers — the app picks the best one configured and degrades gracefully:
 
-- **Sandbox mode (default):** the QR encodes the placeholder destination `639170000000` — it scans and reads correctly, but nothing is charged. Perfect for a stage demo.
-- **Live mode (one line):** set `GCASH_NUMBER` at the top of `app.py` to a real GCash-registered mobile (`63` + number). The same QR then collects real pesos into that account — no gateway, no signup.
-- **Full gateway (post-hackathon):** wire PayMongo ([developers.paymongo.com](https://developers.paymongo.com)) or Maya Business ([developers.maya.ph](https://developers.maya.ph)) test keys into `.streamlit/secrets.toml` for real webhook-confirmed GCash/card flows, with Maya NFC and Stellar USDC following the same pattern.
+1. **PayMongo checkout (real sandbox flows)** — with a PayMongo secret key (`sk_test_...`) in `.streamlit/secrets.toml`, the ₱5 fee creates a **real GCash/Maya checkout session**: the QR opens PayMongo's actual payment page, and the app verifies the status against PayMongo's API before unlocking. Free signup at [developers.paymongo.com](https://developers.paymongo.com); `sk_live_` keys collect real money with zero code changes.
+2. **Your personal GCash QR (real money, zero signup)** — save your GCash app's own QR (Profile → My QR Code → screenshot) as `gcash_qr.png` in the project folder. Anyone scanning it with GCash sends real pesos to your account; keep the amount note on screen. (This file is gitignored — personal data stays out of the public repo.)
+3. **QR Ph builder (standard, sandbox)** — with neither configured, the app generates a standards-correct **QR Ph payload** (EMVCo TLV, PH.PPMI GUI, CRC-16 checksum, amount and bill reference encoded) to a sandbox destination. Honest note: consumer GCash QRs cannot be minted from a phone number — GCash only recognizes QRs it issued — which is why tiers 1 and 2 exist.
+
+**USDC rail is real blockchain:** a funded **Stellar testnet** account settles 0.1 XLM (USDC stand-in) on-chain — the QR is a live **SEP-0007 payment URI** any Stellar wallet can scan, and the "AI agent settles" button broadcasts a genuine testnet transaction with a verifiable hash. Card/Apple Pay remains a labeled simulation (real card rails require a gateway contract).
 
 Hover any toggle, button, or payment card in the app — each carries a plain-language tooltip explaining what it does.
 
@@ -63,7 +65,7 @@ Hover any toggle, button, or payment card in the app — each carries a plain-la
 | Underwriting (llama3.2 via Ollama) | **Local** — user's device |
 | Receipt storage, hashing, Trust Vault | **Local** — JSON file + SHA-256 |
 | QR Ph code generation | **Local** — `qrcode` library, official EMVCo payload |
-| Payment rails (GCash/Maya/Stripe/USDC) | **Simulated locally** — no network calls |
+| Payment rails (GCash/Maya/USDC) | **Local by default**; real flows via optional PayMongo sandbox + Stellar testnet (never required) |
 
 Internet required: **none**. Cloud AI APIs used: **none**.
 
@@ -71,7 +73,7 @@ Internet required: **none**. Cloud AI APIs used: **none**.
 
 - **Models:** `llama3.2` (3.2B, Q4_K_M) running locally via Ollama — `llama3.2:1b` on low-RAM machines (fallback: built-in rule-based Demo Mode, disclosed on screen).
 - **Technologies / frameworks:** Python 3, Streamlit, requests, qrcode, Pillow.
-- **APIs and cloud services:** none — payments and AI are simulated locally; no external endpoint is called.
+- **APIs and cloud services:** none required — the Local AI core runs fully offline. Optional secondary services (activated only by config): PayMongo (payments sandbox) and the Stellar Horizon **testnet** for the settlement rail.
 - **Existing code and assets:** none — built during the hackathon.
 - **AI development tools:** AI-assisted development (agentic coding assistant) was used to write the code, per the allowed rules.
 

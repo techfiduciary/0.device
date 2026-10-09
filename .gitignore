@@ -3,4 +3,5 @@ __pycache__/
 venv/
 .venv/
 assets_db.json
+gcash_qr.png
 .streamlit/secrets.toml
