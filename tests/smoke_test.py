@@ -16,7 +16,7 @@ assert not at.exception, f"boot failed: {at.exception}"
 at.button(key="btn_run").click().run()
 assert not at.exception, f"Run Local AI failed: {at.exception}"
 assert at.session_state["receipt"] is not None, "no receipt generated"
-assert at.session_state["ai_mode"] in ("local", "demo")
+assert at.session_state["ai_mode"] == "demo" or str(at.session_state["ai_mode"]).startswith("llama3.2")
 
 # Page 1: notarize to the Trust Vault
 at.button(key="btn_notarize").click().run()

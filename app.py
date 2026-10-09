@@ -52,7 +52,7 @@ import streamlit as st
 # ── Constants ──────────────────────────────────────────────────────────────
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets_db.json")
 OLLAMA_URL = "http://localhost:11434/api/generate"   # Local AI only. No cloud.
-OLLAMA_MODEL = "llama3.2:latest"  # already installed on this device; use "llama3.2:1b" on low-RAM machines
+OLLAMA_MODELS = ["llama3.2:latest", "llama3.2:1b"]  # steps down automatically if RAM is tight
 GCASH_NUMBER = "639170000000"    # QR Ph collects REAL money once this is your GCash-registered mobile (63 + number)
 GCASH_QR_IMAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gcash_qr.png")
 # ^ Save YOUR GCash app's personal QR (Profile → My QR Code → screenshot) as this file for a truly scannable, real-money QR
@@ -284,23 +284,26 @@ def normalize(rec, raw_text):
 
 def call_ollama(user_text):
     """LOCAL AI PRIVACY: this request goes to 127.0.0.1 only — the user's own
-    machine. If Ollama is down we return Demo Mode data instead of failing."""
-    try:
-        resp = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": UNDERWRITER_PROMPT.format(user_text=user_text),
-                "stream": False,
-                "format": "json",   # force strict JSON from the local model
-                "options": {"temperature": 0.1, "num_predict": 400},
-            },
-            timeout=25,
-        )
-        resp.raise_for_status()
-        return json.loads(resp.json()["response"]), "local"
-    except (requests.RequestException, ValueError, KeyError):
-        return mock_receipt(user_text), "demo"
+    machine. If the big model can't fit in RAM we step down to the 1B model,
+    and if Ollama is down entirely we return Demo Mode data instead of failing."""
+    for model in OLLAMA_MODELS:
+        try:
+            resp = requests.post(
+                OLLAMA_URL,
+                json={
+                    "model": model,
+                    "prompt": UNDERWRITER_PROMPT.format(user_text=user_text),
+                    "stream": False,
+                    "format": "json",   # force strict JSON from the local model
+                    "options": {"temperature": 0.1, "num_predict": 400},
+                },
+                timeout=25,
+            )
+            resp.raise_for_status()
+            return json.loads(resp.json()["response"]), model
+        except (requests.RequestException, ValueError, KeyError):
+            continue
+    return mock_receipt(user_text), "demo"
 
 
 # ── Layer 0 notarization ───────────────────────────────────────────────────
@@ -646,7 +649,7 @@ with tab1:
                     "underwriter produced this receipt. Install Ollama + `ollama pull llama3` "
                     "for the full offline model.", icon="🛟")
         else:
-            st.success(f"🟢 Local AI online — {OLLAMA_MODEL} answered from this device.", icon="🔌")
+            st.success(f"🟢 Local AI online — {st.session_state.ai_mode} answered on this device.", icon="🔌")
 
         st.markdown("**Smart Receipt** · `eCommercial Invoice (eCI)`")
         st.json(rec, expanded=True)
