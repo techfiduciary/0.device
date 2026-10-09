@@ -1,0 +1,534 @@
+"""
+0.Device — The Sovereign Trade & Finance Agent
+AppBuildersPH Hackathon 2026 · Theme: Local AI · Team ISET
+
+Everyday story: a small business owner types what they sold. A local AI
+(running on their own device, via Ollama) turns it into a Smart Receipt,
+locks it in their Trust Vault, and shows how much cash they can get TODAY
+instead of waiting 30–90 days. When a bank or investor wants to look at
+that receipt, they pay a small view fee through any rail they like
+(GCash, Maya, card, USDC). The business owner keeps 70% of every view fee —
+their data earns for them. That is the Fidnt Data Monetization model.
+
+───────────────────────────────────────────────────────────────────────────
+CONCEPT COMMENTS (required by brief)
+───────────────────────────────────────────────────────────────────────────
+
+LOCAL AI PRIVACY
+  The entire underwriting step runs on-device (Ollama → llama3, a local LLM).
+  The seller's sales text — real, sensitive business financial data — never
+  leaves the machine. No cloud AI API is called at any point. This is the
+  reason a market vendor or MSME would trust it: their books stay theirs.
+  If Ollama is not running, the app falls back to a built-in Demo Mode so a
+  live presentation can never crash (disclosed in the README + on screen).
+
+402 MULTI-RAIL eSETTLEMENT
+  When an investor queries a Smart Receipt, the app answers the way the web
+  was designed to: HTTP 402 — Payment Required. That single status code is
+  the gate. The investor then picks ANY rail — GCash QR, Maya NFC tap,
+  Stripe/Apple Pay card, or a USDC atomic settlement on Stellar — and the
+  same unlock happens. Rail-agnostic money movement, one protocol gate.
+
+FIDNT DATA MONETIZATION
+  The person who CREATES the data keeps ownership (Layer 0 notarized by
+  hash) and earns a dividend every single time someone pays to view it:
+  70% to the originator wallet, 30% to the network. Data stops being
+  something extracted from small businesses and becomes an asset they own.
+───────────────────────────────────────────────────────────────────────────
+"""
+
+import hashlib
+import io
+import json
+import os
+import re
+import time
+from datetime import datetime, timedelta
+
+import qrcode
+import requests
+import streamlit as st
+
+# ── Constants ──────────────────────────────────────────────────────────────
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets_db.json")
+OLLAMA_URL = "http://localhost:11434/api/generate"   # Local AI only. No cloud.
+OLLAMA_MODEL = "llama3"
+ORIGINATOR_WALLET = "0xUser1"
+FEE_PHP = 5.0          # view fee, pesos
+FEE_USDC = 0.10        # view fee, USDC
+DIVIDEND_SHARE = 0.70  # Fidnt rule: 70% of every fee → data owner
+KNOWN_CORPS = {
+    "globe", "pldt", "smart", "meralco", "ayala", "bdo", "bpi", "metrobank",
+    "jollibee", "san miguel", "sm prime", "abs-cbn", "cebu pacific",
+    "shopee", "lazada", "google", "nestle", "unilever",
+}
+
+UNDERWRITER_PROMPT = (
+    "You are a trade finance underwriter. Read the user's text. Generate a "
+    "formal eCommercial Invoice in JSON format with keys: 'invoice_id', "
+    "'seller', 'buyer', 'amount' (number, PHP), 'due_date' (YYYY-MM-DD). "
+    "Also, assess the buyer's risk: if they are a large known corporation, "
+    "assign a 3% discount rate; if unknown, 8%. Add keys 'risk_level', "
+    "'discount_rate_percentage', 'suggested_cash_advance' (the amount less "
+    "the discount rate), and 'investor_yield_percentage'. Respond with JSON "
+    "only.\n\nUser text: {user_text}"
+)
+
+# ── Page config + dark, mobile-first styling ───────────────────────────────
+st.set_page_config(
+    page_title="0.Device — Sovereign Trade & Finance Agent",
+    page_icon="⬢",
+    layout="centered",           # mobile-first: single centered column
+    initial_sidebar_state="collapsed",
+)
+
+st.markdown(
+    """
+    <style>
+      .block-container { padding-top: 1.1rem; padding-bottom: 3rem; max-width: 780px; }
+      [data-testid="stToolbar"] { display: none; }
+      div[data-testid="stButton"] > button { width: 100%; border-radius: 12px; font-weight: 600; }
+      .badge { display:inline-block; padding:2px 12px; border-radius:999px;
+               border:1px solid #2fd575; color:#2fd575; font-size:0.72rem;
+               letter-spacing:1.5px; margin-right:6px; }
+      .muted { color:#8fa89b; font-size:0.82rem; }
+      .rail-card { border:1px solid #1f4d38; border-radius:14px; padding:12px 16px;
+                   background:#10201a; margin-bottom:10px; }
+      .rail-title { font-weight:700; font-size:0.98rem; margin-bottom:2px; }
+      .big-green { font-size:1.45rem; font-weight:800; color:#2fd575;
+                   text-align:center; line-height:1.35; margin: 0.4rem 0; }
+      .gate { border:2px solid #2fd575; border-radius:16px; padding:16px 18px;
+              background:#0d1f16; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ── Session state defaults ─────────────────────────────────────────────────
+for key, default in {
+    "receipt": None,            # last Smart Receipt generated (dict)
+    "ai_mode": None,            # "local" or "demo"
+    "notarized_id": None,       # asset_id of last notarized receipt
+    "pay_flow": None,           # {"asset_id","rail","stage"}
+    "last_settlement": None,    # {"asset_id","rail","settled_at",...}
+}.items():
+    st.session_state.setdefault(key, default)
+
+
+# ── Trust Vault helpers (local JSON database) ──────────────────────────────
+def save_db(db):
+    with open(DB_PATH, "w", encoding="utf-8") as f:
+        json.dump(db, f, indent=2, ensure_ascii=False)
+
+
+def seed_asset():
+    """One sample receipt so the Investor view is never empty on first run."""
+    rec = {
+        "invoice_id": "ECI-SEED-0001",
+        "seller": "Juan's Hardware Supply",
+        "buyer": "Globe Telecom",
+        "amount": 100000,
+        "due_date": (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d"),
+        "risk_level": "Low (Prime Buyer)",
+        "discount_rate_percentage": 3.0,
+        "suggested_cash_advance": 97000,
+        "investor_yield_percentage": 3.0,
+    }
+    digest = hashlib.sha256(
+        (json.dumps(rec, sort_keys=True, separators=(",", ":")) + ORIGINATOR_WALLET).encode()
+    ).hexdigest()
+    return {
+        "asset_id": "ECI-SEED-0001",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "wallet": ORIGINATOR_WALLET,
+        "layer0_hash": "0x" + digest,
+        "tranching": False,
+        "rwa_pdax": False,
+        "receipt": rec,
+        "views": 0,
+        "dividends_php": 0.0,
+    }
+
+
+def load_db():
+    if os.path.exists(DB_PATH):
+        try:
+            with open(DB_PATH, encoding="utf-8") as f:
+                db = json.load(f)
+            if isinstance(db, dict) and "assets" in db:
+                return db
+        except (json.JSONDecodeError, OSError):
+            pass
+    db = {"assets": [seed_asset()]}
+    save_db(db)
+    return db
+
+
+# ── Local AI helper (Ollama) + Demo Mode fallback ──────────────────────────
+def parse_amount(text):
+    """Pull a peso figure out of everyday text like 'Sold 100k PHP of ...'."""
+    low = text.lower()
+    m = re.search(r"(\d+(?:\.\d+)?)\s*k\b", low)
+    if m:
+        return float(m.group(1)) * 1000
+    m = re.search(r"(?:php|₱)\s*([\d,]+(?:\.\d+)?)", low)
+    if m:
+        return float(m.group(1).replace(",", ""))
+    m = re.search(r"([\d,]{4,}(?:\.\d+)?)", low)
+    if m:
+        return float(m.group(1).replace(",", ""))
+    return 100000.0
+
+
+def detect_buyer(text):
+    low = text.lower()
+    for corp in KNOWN_CORPS:
+        if corp in low:
+            return corp.title(), True
+    m = re.search(r"\bto\s+([A-Z][\w&.']*(?:\s+[A-Z][\w&.']*){0,3})", text)
+    if m:
+        return m.group(1).strip(), False
+    return "Local Buyer", False
+
+
+def mock_receipt(text):
+    """Demo Mode: same JSON contract the local LLM returns, built with rules.
+    This is the safety net for the live demo — the app never crashes."""
+    buyer, known = detect_buyer(text)
+    amount = parse_amount(text)
+    rate = 3.0 if known else 8.0
+    db = load_db()
+    return {
+        "invoice_id": f"ECI-{datetime.now():%Y%m%d}-{len(db['assets']) + 1:04d}",
+        "seller": "Your Business",
+        "buyer": buyer,
+        "amount": amount,
+        "due_date": (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d"),
+        "risk_level": "Low (Prime Buyer)" if known else "Elevated (Unverified Buyer)",
+        "discount_rate_percentage": rate,
+        "suggested_cash_advance": round(amount * (1 - rate / 100), 2),
+        "investor_yield_percentage": rate,
+    }
+
+
+def normalize(rec, raw_text):
+    """Guarantee every key exists with a sane value, whichever path produced it."""
+    base = mock_receipt(raw_text)
+    base.update({k: v for k, v in rec.items() if v not in (None, "", "null")})
+    try:
+        base["amount"] = float(base["amount"])
+    except (TypeError, ValueError):
+        base["amount"] = parse_amount(raw_text)
+    try:
+        base["suggested_cash_advance"] = round(float(base["suggested_cash_advance"]), 2)
+    except (TypeError, ValueError):
+        base["suggested_cash_advance"] = round(base["amount"] * (1 - float(base.get("discount_rate_percentage", 8)) / 100), 2)
+    return base
+
+
+def call_ollama(user_text):
+    """LOCAL AI PRIVACY: this request goes to 127.0.0.1 only — the user's own
+    machine. If Ollama is down we return Demo Mode data instead of failing."""
+    try:
+        resp = requests.post(
+            OLLAMA_URL,
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": UNDERWRITER_PROMPT.format(user_text=user_text),
+                "stream": False,
+                "format": "json",   # force strict JSON from the local model
+                "options": {"temperature": 0.1, "num_predict": 400},
+            },
+            timeout=25,
+        )
+        resp.raise_for_status()
+        return json.loads(resp.json()["response"]), "local"
+    except (requests.RequestException, ValueError, KeyError):
+        return mock_receipt(user_text), "demo"
+
+
+# ── Layer 0 notarization ───────────────────────────────────────────────────
+def notarize(rec, tranching, rwa_pdax):
+    """Trust Vault: hash the receipt, bind it to the originator wallet, store
+    locally. Layer 0 = identity + integrity before anything else happens."""
+    db = load_db()
+    payload = json.dumps(rec, sort_keys=True, separators=(",", ":")) + ORIGINATOR_WALLET
+    digest = hashlib.sha256(payload.encode()).hexdigest()
+    asset = {
+        "asset_id": rec["invoice_id"],
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "wallet": ORIGINATOR_WALLET,
+        "layer0_hash": "0x" + digest,
+        "tranching": bool(tranching),
+        "rwa_pdax": bool(rwa_pdax),
+        "receipt": rec,
+        "views": 0,
+        "dividends_php": 0.0,
+    }
+    db["assets"].append(asset)
+    save_db(db)
+    return asset
+
+
+# ── 402 Multi-Rail eSettlement ─────────────────────────────────────────────
+def settle(asset_id, rail):
+    """Record the paid unlock: bump the view count and route the Data Dividend
+    (70% of the fee) to the originator wallet. FIDNT DATA MONETIZATION."""
+    db = load_db()
+    for a in db["assets"]:
+        if a["asset_id"] == asset_id:
+            a["views"] = a.get("views", 0) + 1
+            a["dividends_php"] = round(a.get("dividends_php", 0) + FEE_PHP * DIVIDEND_SHARE, 2)
+            break
+    save_db(db)
+    st.session_state.last_settlement = {
+        "asset_id": asset_id,
+        "rail": rail,
+        "settled_at": datetime.now().isoformat(timespec="seconds"),
+        "fee_php": FEE_PHP,
+        "fee_usdc": FEE_USDC,
+        "dividend_php": round(FEE_PHP * DIVIDEND_SHARE, 2),
+        "originator_wallet": ORIGINATOR_WALLET,
+    }
+    st.session_state.pay_flow = {"asset_id": asset_id, "rail": rail, "stage": "done"}
+
+
+def make_qr(payload):
+    """Real QR code, generated on the fly, encoding this payment's details."""
+    qr = qrcode.QRCode(box_size=8, border=2)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="#0b3d2e", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# ── Settlement renderer (shared by Page 2 and Page 3) ──────────────────────
+def render_settlement():
+    s = st.session_state.last_settlement
+    db = load_db()
+    asset = next((a for a in db["assets"] if a["asset_id"] == s["asset_id"]), None)
+    st.markdown(
+        '<p class="big-green">✅ Data Dividend routed to Originator Wallet '
+        f"{s['originator_wallet']}. Instant Cash Advance Approved.</p>",
+        unsafe_allow_html=True,
+    )
+    st.success(
+        f"Paid via **{s['rail']}** at {s['settled_at']} · Fee ₱{s['fee_php']:.2f} "
+        f"(≈ ${s['fee_usdc']:.2f}) · **₱{s['dividend_php']:.2f} Data Dividend** "
+        f"sent instantly to the business owner."
+    )
+    if asset:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Views", asset.get("views", 0))
+        c2.metric("Dividends earned", f"₱{asset.get('dividends_php', 0):,.2f}")
+        c3.metric("Cash advance", f"₱{asset['receipt'].get('suggested_cash_advance', 0):,.0f}")
+        st.markdown("**Smart Receipt — full document now visible to the payer**")
+        st.json(asset["receipt"], expanded=True)
+        st.caption(
+            "Layer 0 seal " + asset["layer0_hash"][:26] + "… · "
+            "70% of every view fee goes to the data owner (Fidnt Data Monetization)."
+        )
+
+
+# ── Payment rail renderer ──────────────────────────────────────────────────
+def render_rail_panel(asset_id):
+    flow = st.session_state.pay_flow
+    rail, stage = flow["rail"], flow["stage"]
+
+    if rail == "GCash" and stage == "interact":
+        st.markdown("**Scan to Pay — GCash**")
+        ref = f"GCASH-{asset_id}-{int(time.time())}"
+        st.image(
+            make_qr(f"gcash://pay?merchant=0.Device&to={ORIGINATOR_WALLET}&amount=PHP{FEE_PHP:.2f}&ref={ref}"),
+            width=220,
+            caption="Mock GCash QR — encodes this exact payment",
+        )
+        st.caption("Merchant webhook listening… (simulated)")
+        if st.button("✅ I paid — confirm GCash webhook", key="btn_gcash_ok", use_container_width=True):
+            with st.spinner("Receiving webhook…"):
+                time.sleep(0.8)
+            settle(asset_id, "GCash")
+            st.rerun()
+
+    elif rail == "Maya" and stage == "interact":
+        st.markdown("**Maya — hold your phone near the terminal (NFC)**")
+        st.caption("Terminal: 0.Device Reader · Amount ₱5.00 · Waiting for tap…")
+        if st.button("📲 Simulate NFC Tap", key="btn_maya_ok", use_container_width=True):
+            with st.spinner("Tap detected — authorizing…"):
+                time.sleep(0.8)
+            settle(asset_id, "Maya (NFC)")
+            st.rerun()
+
+    elif rail == "Card / Apple Pay" and stage == "interact":
+        if st.button("💳 Complete secure checkout (simulated redirect)", key="btn_stripe_ok", use_container_width=True):
+            with st.spinner("Redirecting to Stripe… payment authorized."):
+                time.sleep(1.0)
+            settle(asset_id, "Stripe / Apple Pay")
+            st.rerun()
+
+    elif rail == "USDC (Stellar)" and stage == "interact":
+        if st.button("🤖 Let the AI agent pay — atomic settlement", key="btn_usdc_ok", use_container_width=True):
+            with st.spinner("AI agent signing Stellar payment… $0.10 USDC → escrow → atomic settle."):
+                time.sleep(1.2)
+            settle(asset_id, "USDC via Stellar (AI Agent)")
+            st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# UI
+# ═══════════════════════════════════════════════════════════════════════════
+st.markdown("# 0.Device")
+st.markdown(
+    '<span class="badge">LOCAL AI · OFFLINE · PRIVATE</span>'
+    '<span class="badge">TEAM ISET</span>',
+    unsafe_allow_html=True,
+)
+st.caption("The Sovereign Trade & Finance Agent — turn any sale into a Smart Receipt, "
+           "see the cash you can get today, and earn every time someone views your data.")
+
+tab1, tab2, tab3 = st.tabs(["1 · Business Owner", "2 · Bank / Investor", "3 · Settlement"])
+
+# ─────────────────────────────── Page 1 ────────────────────────────────────
+with tab1:
+    st.markdown("## 🧾 Sovereign Estate Auditor")
+    st.markdown('<span class="muted">Everything below runs on this device. '
+                'Your sales details never touch the internet.</span>', unsafe_allow_html=True)
+
+    desc = st.text_area(
+        "Describe the sale or work you did",
+        value="Sold 100k PHP of hardware to Globe Telecom. Payment due in 30 days.",
+        key="ta_desc",
+        height=110,
+    )
+
+    tranching = st.toggle("Split the payout into tranches (Fiduciary Layer)", key="tg_tranche", value=False)
+    rwa_pdax = st.toggle("Offer this receipt to investors (PDAX Exchange)", key="tg_rwa", value=False)
+
+    if st.button("⚡ Run Local AI", key="btn_run", use_container_width=True, type="primary"):
+        with st.spinner("🧠 Local AI is reading your sale — nothing leaves this device…"):
+            rec, mode = call_ollama(desc)
+        st.session_state.receipt = normalize(rec, desc)
+        st.session_state.ai_mode = mode
+        st.session_state.notarized_id = None
+
+    rec = st.session_state.receipt
+    if rec:
+        if st.session_state.ai_mode == "demo":
+            st.info("⚡ Demo Mode: local AI (Ollama) wasn't reachable, so a built-in "
+                    "underwriter produced this receipt. Install Ollama + `ollama pull llama3` "
+                    "for the full offline model.", icon="🛟")
+        else:
+            st.success(f"🟢 Local AI online — {OLLAMA_MODEL} answered from this device.", icon="🔌")
+
+        st.markdown("**Smart Receipt** · `eCommercial Invoice (eCI)`")
+        st.json(rec, expanded=True)
+
+        st.markdown(
+            f"""
+            <div class="gate">
+              <p class="big-green">💰 Instant cash advance available:<br>
+              PHP {float(rec['suggested_cash_advance']):,.0f}</p>
+              <p class="muted" style="text-align:center; margin:0;">
+              Get paid today instead of waiting for {rec.get('due_date', 'the due date')} ·
+              buyer risk: {rec.get('risk_level', 'n/a')} · investor yield: {rec.get('investor_yield_percentage', '—')}%</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if st.session_state.notarized_id:
+            st.success(f"🔐 Secured in your Trust Vault. You own this data — "
+                       f"receipt ID **{st.session_state.notarized_id}**, sealed to wallet {ORIGINATOR_WALLET}. "
+                       f"Nobody can view it without paying you.")
+            st.caption("Open tab 2 to see what a bank or investor experiences when they query it.")
+        else:
+            if st.button("🔐 Notarize & Secure on Layer 0", key="btn_notarize", use_container_width=True, type="primary"):
+                asset = notarize(rec, tranching, rwa_pdax)
+                st.session_state.notarized_id = asset["asset_id"]
+                st.rerun()
+
+# ─────────────────────────────── Page 2 ────────────────────────────────────
+with tab2:
+    st.markdown("## 🔎 Auditor / Investor View")
+    st.markdown('<span class="muted">Query the Trust Vault like a bank would.</span>', unsafe_allow_html=True)
+
+    db = load_db()
+    assets = db["assets"]
+    labels = {a["asset_id"]: f"{a['asset_id']} — {a['receipt']['buyer']} — ₱{a['receipt']['amount']:,.0f}"
+              for a in assets}
+    chosen = st.selectbox("Smart Receipts in the vault", list(labels.keys()),
+                          format_func=lambda k: labels[k], key="sel_asset")
+
+    if st.button("🔍 Query Smart Receipt", key="btn_query", use_container_width=True):
+        st.session_state.pay_flow = None
+
+    if chosen:
+        asset = next(a for a in assets if a["asset_id"] == chosen)
+        rec = asset["receipt"]
+        flow = st.session_state.pay_flow
+        active_flow = flow if (flow and flow["asset_id"] == chosen) else None
+
+        if active_flow and active_flow["stage"] == "done":
+            render_settlement()
+
+        elif active_flow and active_flow["stage"] == "interact":
+            st.markdown(
+                f"""<div class="gate"><p class="muted" style="margin:0 0 6px;">HTTP 402 · PAYMENT REQUIRED</p>
+                <p style="margin:0;">Paying to view <b>{chosen}</b> via {active_flow['rail']}…</p></div>""",
+                unsafe_allow_html=True,
+            )
+            render_rail_panel(chosen)
+
+        else:
+            # Locked teaser + the 402 gate
+            st.markdown(f"""<div class="gate">
+              <p class="muted" style="margin:0 0 6px;">RECEIPT {chosen} · SEALED ON LAYER 0 ·
+              {asset['layer0_hash'][:22]}…</p>
+              <p style="margin:0;">Buyer: <b>{rec['buyer']}</b> · Amount: <b>₱{rec['amount']:,.0f}</b><br>
+              <span class="muted">Seller, terms and full document are private until the view fee is paid.</span></p>
+            </div>""", unsafe_allow_html=True)
+
+            st.markdown("### 🔒 402 Payment Required — Small Fee to See the Full Receipt")
+            st.markdown(f"**₱{FEE_PHP:.2f}** (≈ ${FEE_USDC:.2f} USDC) — one-time view fee. "
+                        f"**The business owner keeps ₱{FEE_PHP * DIVIDEND_SHARE:.2f} of it** and earns "
+                        f"every time their data is viewed.")
+            st.caption("HTTP 402 Multi-Rail eSettlement — one gate, any payment rail.")
+
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown('<div class="rail-card"><div class="rail-title">📱 GCash</div>'
+                            '<span class="muted">₱5.00 · QR code</span></div>', unsafe_allow_html=True)
+                if st.button("Pay ₱5 via GCash", key="btn_gcash", use_container_width=True):
+                    st.session_state.pay_flow = {"asset_id": chosen, "rail": "GCash", "stage": "interact"}
+                    st.rerun()
+
+                st.markdown('<div class="rail-card"><div class="rail-title">💳 Card / Apple Pay</div>'
+                            '<span class="muted">$0.10 · Stripe</span></div>', unsafe_allow_html=True)
+                if st.button("Pay $0.10 via Stripe / Apple Pay", key="btn_stripe", use_container_width=True):
+                    st.session_state.pay_flow = {"asset_id": chosen, "rail": "Card / Apple Pay", "stage": "interact"}
+                    st.rerun()
+
+            with c2:
+                st.markdown('<div class="rail-card"><div class="rail-title">📲 Maya</div>'
+                            '<span class="muted">₱5.00 · NFC tap</span></div>', unsafe_allow_html=True)
+                if st.button("Pay ₱5 via Maya (NFC)", key="btn_maya", use_container_width=True):
+                    st.session_state.pay_flow = {"asset_id": chosen, "rail": "Maya", "stage": "interact"}
+                    st.rerun()
+
+                st.markdown('<div class="rail-card"><div class="rail-title">🪙 USDC</div>'
+                            '<span class="muted">$0.10 · Stellar · AI agent</span></div>', unsafe_allow_html=True)
+                if st.button("Pay $0.10 USDC via Stellar", key="btn_usdc", use_container_width=True):
+                    st.session_state.pay_flow = {"asset_id": chosen, "rail": "USDC (Stellar)", "stage": "interact"}
+                    st.rerun()
+
+# ─────────────────────────────── Page 3 ────────────────────────────────────
+with tab3:
+    st.markdown("## ✅ Settlement & Data Dividend")
+    if st.session_state.last_settlement:
+        render_settlement()
+    else:
+        st.info("No settlement yet. Open **2 · Bank / Investor**, query a Smart Receipt, "
+                "and pay through any rail — the moment it clears, the Data Dividend "
+                "lands in the business owner's wallet and the full receipt is visible here.")
