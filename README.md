@@ -36,7 +36,7 @@ A small business owner types what they sold. A local AI turns it into a **Smart 
 pip install -r requirements.txt
 
 # 2. (Optional, for the real local AI) install Ollama from https://ollama.com then:
-ollama pull llama3
+ollama pull llama3.2        # 3.2B model; on machines with <4 GB free RAM use: ollama pull llama3.2:1b
 
 # 3. Run:
 streamlit run app.py
@@ -46,20 +46,30 @@ The app opens at http://localhost:8501.
 
 **Demo Mode:** if Ollama isn't running, the app does not fail — it switches to a built-in rule-based underwriter (clearly labeled on screen) with the exact same output contract. Everything else (402 gate, QR, settlement, dividends) works identically. This is a deliberate fail-safe so the demo is repeatable anywhere, including offline on stage.
 
+## Payments: the QR is real, the rails are the upgrade path
+
+The GCash rail generates an **official QR Ph code** — the EMVCo payload format (PH.PPMI GUI + CRC-16 checksum) that GCash, Maya, and every participating Philippine bank app scan natively. It includes the amount (₱5.00) and a unique bill reference.
+
+- **Sandbox mode (default):** the QR encodes the placeholder destination `639170000000` — it scans and reads correctly, but nothing is charged. Perfect for a stage demo.
+- **Live mode (one line):** set `GCASH_NUMBER` at the top of `app.py` to a real GCash-registered mobile (`63` + number). The same QR then collects real pesos into that account — no gateway, no signup.
+- **Full gateway (post-hackathon):** wire PayMongo ([developers.paymongo.com](https://developers.paymongo.com)) or Maya Business ([developers.maya.ph](https://developers.maya.ph)) test keys into `.streamlit/secrets.toml` for real webhook-confirmed GCash/card flows, with Maya NFC and Stellar USDC following the same pattern.
+
+Hover any toggle, button, or payment card in the app — each carries a plain-language tooltip explaining what it does.
+
 ## What runs locally vs. what needs internet
 
 | Component | Where it runs |
 |---|---|
-| Underwriting (llama3 via Ollama) | **Local** — user's device |
+| Underwriting (llama3.2 via Ollama) | **Local** — user's device |
 | Receipt storage, hashing, Trust Vault | **Local** — JSON file + SHA-256 |
-| QR code generation | **Local** — `qrcode` library |
+| QR Ph code generation | **Local** — `qrcode` library, official EMVCo payload |
 | Payment rails (GCash/Maya/Stripe/USDC) | **Simulated locally** — no network calls |
 
 Internet required: **none**. Cloud AI APIs used: **none**.
 
 ## Disclosures (required by the rules)
 
-- **Models:** `llama3` running locally via Ollama (fallback: built-in rule-based Demo Mode, disclosed on screen).
+- **Models:** `llama3.2` (3.2B, Q4_K_M) running locally via Ollama — `llama3.2:1b` on low-RAM machines (fallback: built-in rule-based Demo Mode, disclosed on screen).
 - **Technologies / frameworks:** Python 3, Streamlit, requests, qrcode, Pillow.
 - **APIs and cloud services:** none — payments and AI are simulated locally; no external endpoint is called.
 - **Existing code and assets:** none — built during the hackathon.

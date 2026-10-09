@@ -52,7 +52,8 @@ import streamlit as st
 # ── Constants ──────────────────────────────────────────────────────────────
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets_db.json")
 OLLAMA_URL = "http://localhost:11434/api/generate"   # Local AI only. No cloud.
-OLLAMA_MODEL = "llama3"
+OLLAMA_MODEL = "llama3.2:latest"  # already installed on this device; use "llama3.2:1b" on low-RAM machines
+GCASH_NUMBER = "639170000000"    # QR Ph collects REAL money once this is your GCash-registered mobile (63 + number)
 ORIGINATOR_WALLET = "0xUser1"
 FEE_PHP = 5.0          # view fee, pesos
 FEE_USDC = 0.10        # view fee, USDC
@@ -85,20 +86,72 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      .block-container { padding-top: 1.1rem; padding-bottom: 3rem; max-width: 780px; }
+      /* ── The page: deep emerald, subtle glow — desktop shows one phone-size
+         glass widget floating in the middle; mobile goes full-bleed app ── */
+      .stApp {
+        background:
+          radial-gradient(900px 520px at 12% -8%, rgba(47,213,117,0.16), transparent 60%),
+          radial-gradient(720px 520px at 108% 18%, rgba(46,144,255,0.10), transparent 55%),
+          linear-gradient(160deg, #07130d 0%, #0a1410 45%, #050b08 100%);
+      }
+      .block-container {
+        max-width: 430px;                       /* phone-size on desktop */
+        margin: 2.4rem auto 3rem;
+        padding: 1.25rem 1.15rem 2.4rem;
+        background: rgba(255,255,255,0.045);
+        backdrop-filter: blur(28px) saturate(150%);
+        -webkit-backdrop-filter: blur(28px) saturate(150%);
+        border: 1px solid rgba(255,255,255,0.10);
+        border-radius: 34px;
+        box-shadow: 0 30px 90px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08);
+      }
+      /* hide browser chrome — it should feel like a device, not a webpage */
+      [data-testid="stHeader"] { display: none; }
+      [data-testid="stSidebar"] { display: none; }
       [data-testid="stToolbar"] { display: none; }
-      div[data-testid="stButton"] > button { width: 100%; border-radius: 12px; font-weight: 600; }
+      [data-testid="stFooter"] { display: none; }
+      footer { visibility: hidden; }
+      /* device status strip */
+      .devicetop { display:flex; justify-content:space-between; align-items:center;
+        font-size:0.70rem; letter-spacing:1.6px; color:#8fa89b; margin-bottom:0.5rem; }
+      /* tabs as a segmented control */
+      div[data-baseweb="tab-list"] { gap: 6px; background: rgba(255,255,255,0.05);
+        padding: 4px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.08); }
+      button[data-baseweb="tab"] { border-radius: 11px !important; font-size: 0.82rem; }
+      button[data-baseweb="tab"][aria-selected="true"] { background: rgba(47,213,117,0.20); }
+      /* glass buttons and inputs */
+      div[data-testid="stButton"] > button {
+        width: 100%; border-radius: 14px; font-weight: 600;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.12);
+      }
+      div[data-testid="stButton"] > button[kind="primary"] {
+        background: linear-gradient(135deg, #1f9d55, #2fd575);
+        border: none; color: #04120a;
+      }
+      div[data-testid="stTextArea"] textarea, [data-baseweb="select"] > div {
+        background: rgba(255,255,255,0.06) !important;
+        border-radius: 12px !important;
+      }
       .badge { display:inline-block; padding:2px 12px; border-radius:999px;
-               border:1px solid #2fd575; color:#2fd575; font-size:0.72rem;
+               border:1px solid rgba(47,213,117,0.7); color:#2fd575; font-size:0.70rem;
                letter-spacing:1.5px; margin-right:6px; }
       .muted { color:#8fa89b; font-size:0.82rem; }
-      .rail-card { border:1px solid #1f4d38; border-radius:14px; padding:12px 16px;
-                   background:#10201a; margin-bottom:10px; }
+      .rail-card { border:1px solid rgba(255,255,255,0.10); border-radius:14px; padding:12px 16px;
+                   background: rgba(255,255,255,0.05); margin-bottom:10px; }
       .rail-title { font-weight:700; font-size:0.98rem; margin-bottom:2px; }
       .big-green { font-size:1.45rem; font-weight:800; color:#2fd575;
                    text-align:center; line-height:1.35; margin: 0.4rem 0; }
-      .gate { border:2px solid #2fd575; border-radius:16px; padding:16px 18px;
-              background:#0d1f16; }
+      .gate { border:1px solid rgba(47,213,117,0.55); border-radius:16px; padding:16px 18px;
+              background: rgba(47,213,117,0.07); }
+      /* mobile: the widget becomes the whole screen — native-app feel */
+      @media (max-width: 640px) {
+        .block-container {
+          max-width: 100%; margin: 0; border-radius: 0;
+          border-left: none; border-right: none; border-top: none;
+          padding-bottom: calc(2.4rem + env(safe-area-inset-bottom));
+        }
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -304,6 +357,43 @@ def make_qr(payload):
     return buf.getvalue()
 
 
+def _crc16(data: bytes) -> str:
+    """CRC-16/CCITT-FALSE — the checksum EMVCo QR codes require in tag 63."""
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) if (crc & 0x8000) else (crc << 1)
+            crc &= 0xFFFF
+    return f"{crc:04X}"
+
+
+def _tlv(tag: str, value: str) -> str:
+    return f"{tag}{len(value):02d}{value}"
+
+
+def qrph_payload(amount_php: float, ref: str) -> str:
+    """Official QR Ph payload (EMVCo merchant-presented QR, the Philippine
+    national QR standard that GCash, Maya, and every participating bank app
+    scan natively). Tag 26 carries the PH.PPMI GUI + destination account;
+    tag 63 carries the CRC-16. Set GCASH_NUMBER to a real GCash mobile to
+    collect real pesos — today it runs with a sandbox number."""
+    body = (
+        _tlv("00", "01")                                   # payload format indicator
+        + _tlv("01", "12")                                 # dynamic, one-time-use QR
+        + _tlv("26", _tlv("00", "PH.PPMI") + _tlv("01", GCASH_NUMBER))
+        + _tlv("52", "5199")                               # merchant category code
+        + _tlv("53", "608")                                # currency: PHP
+        + _tlv("54", f"{amount_php:.2f}")
+        + _tlv("58", "PH")
+        + _tlv("59", "0 DEVICE")                           # merchant name
+        + _tlv("60", "MANILA")
+        + _tlv("62", _tlv("05", ref[:25]))                 # bill / reference number
+    )
+    body += "6304"
+    return body + _crc16(body.encode())
+
+
 # ── Settlement renderer (shared by Page 2 and Page 3) ──────────────────────
 def render_settlement():
     s = st.session_state.last_settlement
@@ -341,11 +431,12 @@ def render_rail_panel(asset_id):
         st.markdown("**Scan to Pay — GCash**")
         ref = f"GCASH-{asset_id}-{int(time.time())}"
         st.image(
-            make_qr(f"gcash://pay?merchant=0.Device&to={ORIGINATOR_WALLET}&amount=PHP{FEE_PHP:.2f}&ref={ref}"),
-            width=220,
-            caption="Mock GCash QR — encodes this exact payment",
+            make_qr(qrph_payload(FEE_PHP, ref)),
+            width=230,
+            caption="Official QR Ph (EMVCo) code — scannable by GCash, Maya, and any PH bank app",
         )
-        st.caption("Merchant webhook listening… (simulated)")
+        st.caption(f"Sandbox destination {GCASH_NUMBER} — set GCASH_NUMBER in app.py to your "
+                   f"GCash mobile and this same QR collects real pesos. Ref {ref}")
         if st.button("✅ I paid — confirm GCash webhook", key="btn_gcash_ok", use_container_width=True):
             with st.spinner("Receiving webhook…"):
                 time.sleep(0.8)
@@ -379,6 +470,12 @@ def render_rail_panel(asset_id):
 # ═══════════════════════════════════════════════════════════════════════════
 # UI
 # ═══════════════════════════════════════════════════════════════════════════
+now = datetime.now()
+st.markdown(
+    f'<div class="devicetop"><span>⬢ 0.DEVICE</span>'
+    f'<span>{now:%I:%M %p} · LOCAL · ▮▮▮▮</span></div>',
+    unsafe_allow_html=True,
+)
 st.markdown("# 0.Device")
 st.markdown(
     '<span class="badge">LOCAL AI · OFFLINE · PRIVATE</span>'
@@ -403,10 +500,21 @@ with tab1:
         height=110,
     )
 
-    tranching = st.toggle("Split the payout into tranches (Fiduciary Layer)", key="tg_tranche", value=False)
-    rwa_pdax = st.toggle("Offer this receipt to investors (PDAX Exchange)", key="tg_rwa", value=False)
+    tranching = st.toggle(
+        "Split the payout into tranches (Fiduciary Layer)", key="tg_tranche", value=False,
+        help="Instead of one lump sum, the investor's money arrives in scheduled parts — "
+             "handled for you, fiduciary-style.",
+    )
+    rwa_pdax = st.toggle(
+        "Offer this receipt to investors (PDAX Exchange)", key="tg_rwa", value=False,
+        help="List the receipt on PDAX so investors anywhere can fund it and earn the yield.",
+    )
 
-    if st.button("⚡ Run Local AI", key="btn_run", use_container_width=True, type="primary"):
+    if st.button(
+        "⚡ Run Local AI", key="btn_run", use_container_width=True, type="primary",
+        help="Reads your text with llama3.2 running ON THIS DEVICE via Ollama — "
+             "your sales details never touch the internet.",
+    ):
         with st.spinner("🧠 Local AI is reading your sale — nothing leaves this device…"):
             rec, mode = call_ollama(desc)
         st.session_state.receipt = normalize(rec, desc)
@@ -444,7 +552,11 @@ with tab1:
                        f"Nobody can view it without paying you.")
             st.caption("Open tab 2 to see what a bank or investor experiences when they query it.")
         else:
-            if st.button("🔐 Notarize & Secure on Layer 0", key="btn_notarize", use_container_width=True, type="primary"):
+            if st.button(
+                "🔐 Notarize & Secure on Layer 0", key="btn_notarize", use_container_width=True, type="primary",
+                help="Stamps the receipt with a SHA-256 fingerprint bound to your wallet and "
+                     "stores it in your local Trust Vault — proof you own this data.",
+            ):
                 asset = notarize(rec, tranching, rwa_pdax)
                 st.session_state.notarized_id = asset["asset_id"]
                 st.rerun()
@@ -458,10 +570,16 @@ with tab2:
     assets = db["assets"]
     labels = {a["asset_id"]: f"{a['asset_id']} — {a['receipt']['buyer']} — ₱{a['receipt']['amount']:,.0f}"
               for a in assets}
-    chosen = st.selectbox("Smart Receipts in the vault", list(labels.keys()),
-                          format_func=lambda k: labels[k], key="sel_asset")
+    chosen = st.selectbox(
+        "Smart Receipts in the vault", list(labels.keys()),
+        format_func=lambda k: labels[k], key="sel_asset",
+        help="Every receipt a business owner has notarized — each one sealed to their wallet.",
+    )
 
-    if st.button("🔍 Query Smart Receipt", key="btn_query", use_container_width=True):
+    if st.button(
+        "🔍 Query Smart Receipt", key="btn_query", use_container_width=True,
+        help="See exactly what a bank or investor sees when they request this receipt from your vault.",
+    ):
         st.session_state.pay_flow = None
 
     if chosen:
@@ -498,28 +616,54 @@ with tab2:
 
             c1, c2 = st.columns(2)
             with c1:
-                st.markdown('<div class="rail-card"><div class="rail-title">📱 GCash</div>'
-                            '<span class="muted">₱5.00 · QR code</span></div>', unsafe_allow_html=True)
-                if st.button("Pay ₱5 via GCash", key="btn_gcash", use_container_width=True):
+                st.markdown(
+                    '<div class="rail-card" title="One-time QR Ph code — the national standard '
+                    'GCash and every PH bank app scans natively. 70% of the fee goes to the owner.">'
+                    '<div class="rail-title">📱 GCash</div>'
+                    '<span class="muted">₱5.00 · QR Ph code</span></div>', unsafe_allow_html=True)
+                if st.button(
+                    "Pay ₱5 via GCash", key="btn_gcash", use_container_width=True,
+                    help="Generates an official QR Ph code on the spot — scan it with any "
+                         "GCash or bank app to pay the ₱5 view fee.",
+                ):
                     st.session_state.pay_flow = {"asset_id": chosen, "rail": "GCash", "stage": "interact"}
                     st.rerun()
 
-                st.markdown('<div class="rail-card"><div class="rail-title">💳 Card / Apple Pay</div>'
-                            '<span class="muted">$0.10 · Stripe</span></div>', unsafe_allow_html=True)
-                if st.button("Pay $0.10 via Stripe / Apple Pay", key="btn_stripe", use_container_width=True):
+                st.markdown(
+                    '<div class="rail-card" title="Card payment through Stripe — a simulated '
+                    'redirect tonight, wired to a live gateway the moment API keys are added.">'
+                    '<div class="rail-title">💳 Card / Apple Pay</div>'
+                    '<span class="muted">$0.10 · Stripe</span></div>', unsafe_allow_html=True)
+                if st.button(
+                    "Pay $0.10 via Stripe / Apple Pay", key="btn_stripe", use_container_width=True,
+                    help="Card payment through Stripe — simulated tonight, one API key away from live.",
+                ):
                     st.session_state.pay_flow = {"asset_id": chosen, "rail": "Card / Apple Pay", "stage": "interact"}
                     st.rerun()
 
             with c2:
-                st.markdown('<div class="rail-card"><div class="rail-title">📲 Maya</div>'
-                            '<span class="muted">₱5.00 · NFC tap</span></div>', unsafe_allow_html=True)
-                if st.button("Pay ₱5 via Maya (NFC)", key="btn_maya", use_container_width=True):
+                st.markdown(
+                    '<div class="rail-card" title="Tap-to-pay — hold your phone near the reader, '
+                    'the same tap you use at the grocery.">'
+                    '<div class="rail-title">📲 Maya</div>'
+                    '<span class="muted">₱5.00 · NFC tap</span></div>', unsafe_allow_html=True)
+                if st.button(
+                    "Pay ₱5 via Maya (NFC)", key="btn_maya", use_container_width=True,
+                    help="Tap-to-pay like at a grocery counter — hold your phone near the reader.",
+                ):
                     st.session_state.pay_flow = {"asset_id": chosen, "rail": "Maya", "stage": "interact"}
                     st.rerun()
 
-                st.markdown('<div class="rail-card"><div class="rail-title">🪙 USDC</div>'
-                            '<span class="muted">$0.10 · Stellar · AI agent</span></div>', unsafe_allow_html=True)
-                if st.button("Pay $0.10 USDC via Stellar", key="btn_usdc", use_container_width=True):
+                st.markdown(
+                    '<div class="rail-card" title="Stablecoin settlement — an AI agent pays on the '
+                    'Stellar network and the receipt opens atomically, no waiting for banks.">'
+                    '<div class="rail-title">🪙 USDC</div>'
+                    '<span class="muted">$0.10 · Stellar · AI agent</span></div>', unsafe_allow_html=True)
+                if st.button(
+                    "Pay $0.10 USDC via Stellar", key="btn_usdc", use_container_width=True,
+                    help="A machine-to-machine payment: the AI agent settles on Stellar and the "
+                         "receipt opens in the same atomic step.",
+                ):
                     st.session_state.pay_flow = {"asset_id": chosen, "rail": "USDC (Stellar)", "stage": "interact"}
                     st.rerun()
 
