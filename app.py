@@ -197,6 +197,23 @@ st.markdown(
                          50% { box-shadow: 0 0 16px 3px rgba(47,213,117,0.22); } }
       .rail-card { transition: transform .18s ease, border-color .18s ease; }
       .rail-card:hover { transform: translateY(-2px); border-color: rgba(47,213,117,0.55); }
+      /* ── One-line section headings + topmost, unclipped tooltips ── */
+      h2 { font-size: 1.02rem !important; margin: 0.15rem 0 0.1rem !important; white-space: nowrap; }
+      h2 + div, h2 a { display: inline; }
+      [data-baseweb="popover"], [data-baseweb="tooltip"] { z-index: 100000 !important; }
+      /* ── Investor mechanics flow diagram ── */
+      .flow { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap;
+              background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.10);
+              border-radius: 14px; padding: 12px; }
+      .fstep { flex: 1 1 38%; min-width: 120px; background: rgba(255,255,255,0.05);
+               border: 1px solid rgba(255,255,255,0.10); border-radius: 12px;
+               padding: 8px 10px; text-align: center; }
+      .fn { display: inline-block; width: 20px; height: 20px; line-height: 20px; border-radius: 50%;
+            background: rgba(47,213,117,0.25); color: #7fe0a8; font-weight: 800; font-size: 0.72rem; }
+      .ft { font-weight: 700; font-size: 0.82rem; margin-top: 3px; }
+      .fd { font-size: 0.66rem; color: #8fa89b; margin-top: 2px; line-height: 1.3; }
+      .farrow { align-self: center; color: #7fe0a8; font-size: 1rem; }
+      .mech li { font-size: 0.78rem; color: #c9ded3; margin-bottom: 4px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -644,6 +661,26 @@ def render_rail_panel(asset_id):
 # ═══════════════════════════════════════════════════════════════════════════
 # UI
 # ═══════════════════════════════════════════════════════════════════════════
+hero_bg = "url('app/static/hero.jpg'), " if os.path.exists(HERO_IMG_PATH) else ""
+st.markdown(
+    f"""
+    <div class="hero" style="background-image:
+      linear-gradient(155deg, rgba(4,18,10,0.42), rgba(4,18,10,0.88)), {hero_bg}
+      radial-gradient(120% 120% at 18% 0%, rgba(47,213,117,0.30), transparent 55%),
+      radial-gradient(130% 140% at 92% 112%, rgba(212,175,55,0.20), transparent 55%),
+      linear-gradient(160deg, #0d2418, #07130d);">
+      <div class="hero-kicker">FINANCIAL INCLUSION · ONE RECEIPT AT A TIME</div>
+      <div class="hero-title">Your sale. Your phone.<br>Your money — today.</div>
+      <div class="hero-sub">No collateral. No credit line. Your receipt is the collateral.</div>
+      <div class="hero-receipt">
+        <div class="hr-row"><span>Smart Receipt · ECI-2026-0001</span><span>PAID ⚡</span></div>
+        <div class="hr-amount">₱97,000 — available today</div>
+        <span class="hr-tag">LOCAL AI VERIFIED · LAYER 0 SEALED</span>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 now = datetime.now()
 st.markdown(
     f'<div class="devicetop"><span>⬢ 0.DEVICE</span>'
@@ -663,26 +700,6 @@ tab1, tab2, tab3 = st.tabs(["1 · Business Owner", "2 · Bank / Investor", "3 ·
 
 # ─────────────────────────────── Page 1 ────────────────────────────────────
 with tab1:
-    hero_bg = "url('app/static/hero.jpg'), " if os.path.exists(HERO_IMG_PATH) else ""
-    st.markdown(
-        f"""
-        <div class="hero" style="background-image:
-          linear-gradient(155deg, rgba(4,18,10,0.42), rgba(4,18,10,0.88)), {hero_bg}
-          radial-gradient(120% 120% at 18% 0%, rgba(47,213,117,0.30), transparent 55%),
-          radial-gradient(130% 140% at 92% 112%, rgba(212,175,55,0.20), transparent 55%),
-          linear-gradient(160deg, #0d2418, #07130d);">
-          <div class="hero-kicker">FINANCIAL INCLUSION · ONE RECEIPT AT A TIME</div>
-          <div class="hero-title">Your sale. Your phone.<br>Your money — today.</div>
-          <div class="hero-sub">No collateral. No credit line. Your receipt is the collateral.</div>
-          <div class="hero-receipt">
-            <div class="hr-row"><span>Smart Receipt · ECI-2026-0001</span><span>PAID ⚡</span></div>
-            <div class="hr-amount">₱97,000 — available today</div>
-            <span class="hr-tag">LOCAL AI VERIFIED · LAYER 0 SEALED</span>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
     st.markdown("## 🧾 Sovereign Estate Auditor")
     st.markdown('<span class="muted">Everything below runs on this device. '
                 'Your sales details never touch the internet.</span>', unsafe_allow_html=True)
@@ -700,6 +717,20 @@ with tab1:
 
     st.markdown('<div class="steps"><b>1</b> Describe your sale &nbsp;→&nbsp; <b>2</b> See your cash offer '
                 '&nbsp;→&nbsp; <b>3</b> Lock it in your vault</div>', unsafe_allow_html=True)
+
+    with st.expander("📖 How to issue a receipt — 4 steps", expanded=True):
+        st.markdown(
+            "<div class='mech'>"
+            "<li><b>1 · Describe</b> — type what you sold in plain words (an example is already filled in).</li>"
+            "<li><b>2 · Press ⚡ Run Local AI</b> — the AI on this device drafts your <b>Smart Receipt</b> "
+            "and shows your instant cash offer. Hover any <b>?</b> icon for help.</li>"
+            "<li><b>3 · Press 🔐 Notarize &amp; Secure on Layer 0</b> — the receipt is sealed to your "
+            "wallet in your Trust Vault. <i>Issuance done — you now own a bank-grade digital receipt.</i></li>"
+            "<li><b>4 · Show it or fund it</b> — switch to <b>2 · Bank / Investor</b> to see what a bank "
+            "sees, and <b>3 · Settlement</b> for your earnings.</li>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
 
     desc = st.text_area(
         "Describe the sale or work you did",
@@ -774,6 +805,37 @@ with tab1:
 with tab2:
     st.markdown("## 🔎 Auditor / Investor View")
     st.markdown('<span class="muted">Query the Trust Vault like a bank would.</span>', unsafe_allow_html=True)
+
+    with st.expander("📊 How the mechanics work — for investors", expanded=True):
+        st.markdown(
+            """<div class="flow">
+              <div class="fstep"><div class="fn">1</div><div class="ft">Query</div>
+                <div class="fd">Investor requests a Smart Receipt from the vault</div></div>
+              <div class="farrow">→</div>
+              <div class="fstep"><div class="fn">2</div><div class="ft">402 Gate</div>
+                <div class="fd">App answers: HTTP 402 — pay ₱5 to view</div></div>
+              <div class="farrow">→</div>
+              <div class="fstep"><div class="fn">3</div><div class="ft">Any rail</div>
+                <div class="fd">GCash · Maya · Card · USDC — same gate</div></div>
+              <div class="farrow">→</div>
+              <div class="fstep"><div class="fn">4</div><div class="ft">Unlock + Dividend</div>
+                <div class="fd">Receipt opens; owner earns ₱3.50 instantly</div></div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<div class='mech' style='margin-top:8px;'>"
+            "<li><b>Why it's safe to fund:</b> every receipt is sealed with a SHA-256 Layer 0 fingerprint "
+            "bound to the owner's wallet — you can verify integrity before paying.</li>"
+            "<li><b>Why the advance is safe:</b> prime buyers (e.g. Globe) carry a 3% discount — "
+            "you lend ₱97,000 against a ₱100,000 receipt and collect the full face value on due date.</li>"
+            "<li><b>The data dividend:</b> 70% of every view fee goes to the business owner — "
+            "the more the market looks, the more the vendor earns. Aligned incentives by design.</li>"
+            "<li><b>Global rails:</b> the same HTTP 402 gate accepts USDC on Stellar — "
+            "an investor anywhere on earth can fund a Philippine receipt.</li>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
 
     db = load_db()
     assets = db["assets"]
