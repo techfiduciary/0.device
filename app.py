@@ -56,6 +56,8 @@ OLLAMA_MODELS = ["llama3.2:latest", "llama3.2:1b"]  # steps down automatically i
 GCASH_NUMBER = "639170000000"    # QR Ph collects REAL money once this is your GCash-registered mobile (63 + number)
 GCASH_QR_IMAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gcash_qr.png")
 # ^ Save YOUR GCash app's personal QR (Profile → My QR Code → screenshot) as this file for a truly scannable, real-money QR
+HERO_IMG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "hero.jpg")
+# ^ OPTIONAL: drop any landscape photo here and it becomes the hero background (otherwise a cinematic CSS hero shows)
 STELLAR_TREASURY_DEFAULT = "GBSQMSQFTC7PUI3OGE3BPTXFKC42OPMK7CVAO7MR3Z6J2HY4JI3EK5IE"  # funded Stellar TESTNET account (public key)
 ORIGINATOR_WALLET = "0xUser1"
 FEE_PHP = 5.0          # view fee, pesos
@@ -155,6 +157,46 @@ st.markdown(
           padding-bottom: calc(2.4rem + env(safe-area-inset-bottom));
         }
       }
+      /* ── Cinematic hero ── */
+      .hero { position: relative; border-radius: 22px; padding: 2rem 1.3rem 1.9rem;
+              text-align: center; overflow: hidden; margin-bottom: 0.9rem;
+              background-size: cover; background-position: center;
+              background-image:
+                linear-gradient(155deg, rgba(4,18,10,0.30), rgba(4,18,10,0.88)),
+                radial-gradient(120% 120% at 18% 0%, rgba(47,213,117,0.30), transparent 55%),
+                radial-gradient(130% 140% at 92% 112%, rgba(212,175,55,0.20), transparent 55%),
+                linear-gradient(160deg, #0d2418, #07130d);
+              border: 1px solid rgba(47,213,117,0.35); }
+      .hero-kicker { font-size: 0.62rem; letter-spacing: 2.4px; color: #7fe0a8; margin-bottom: 0.55rem; }
+      .hero-title { font-size: 1.66rem; font-weight: 800; line-height: 1.16; color: #f2fbf6;
+                    text-shadow: 0 2px 26px rgba(47,213,117,0.35); }
+      .hero-sub { font-size: 0.85rem; color: #a9c6b6; margin-top: 0.5rem; }
+      .hero-receipt { position: relative; margin: 1.05rem auto 0.15rem; width: 80%;
+                      background: rgba(240,255,247,0.97); color: #07130d; border-radius: 14px;
+                      padding: 0.65rem 0.9rem; text-align: left; transform: rotate(-2.2deg);
+                      box-shadow: 0 18px 40px rgba(0,0,0,0.45), 0 0 0 1px rgba(47,213,117,0.5);
+                      animation: floaty 5.5s ease-in-out infinite; }
+      .hr-row { display: flex; justify-content: space-between; font-size: 0.66rem; color: #4c6a5b; }
+      .hr-amount { font-size: 1.08rem; font-weight: 800; color: #0b7a3e; margin-top: 2px; }
+      .hr-tag { display: inline-block; margin-top: 5px; font-size: 0.58rem; font-weight: 700;
+                background: #d8f5e4; color: #0b7a3e; border-radius: 999px; padding: 1px 8px;
+                letter-spacing: 0.6px; }
+      @keyframes floaty { 0%,100% { transform: rotate(-2.2deg) translateY(0); }
+                          50% { transform: rotate(-1.3deg) translateY(-6px); } }
+      /* ── Value strip + stepper ── */
+      .vp-card { border: 1px solid rgba(255,255,255,0.10); background: rgba(255,255,255,0.05);
+                 border-radius: 14px; padding: 10px 8px; text-align: center; height: 100%; }
+      .vp-ico { font-size: 1.15rem; }
+      .vp-t { font-weight: 700; font-size: 0.8rem; margin-top: 2px; }
+      .vp-d { font-size: 0.66rem; color: #8fa89b; margin-top: 3px; line-height: 1.35; }
+      .steps { text-align: center; font-size: 0.74rem; color: #8fa89b; margin: 0.1rem 0 0.65rem; }
+      .steps b { color: #7fe0a8; }
+      /* ── Motion ── */
+      div[data-testid="stButton"] > button[kind="primary"] { animation: pulse 2.6s ease-in-out infinite; }
+      @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(47,213,117,0.35); }
+                         50% { box-shadow: 0 0 16px 3px rgba(47,213,117,0.22); } }
+      .rail-card { transition: transform .18s ease, border-color .18s ease; }
+      .rail-card:hover { transform: translateY(-2px); border-color: rgba(47,213,117,0.55); }
     </style>
     """,
     unsafe_allow_html=True,
@@ -481,6 +523,17 @@ def render_rail_panel(asset_id):
         if get_secret("paymongo", "secret_key"):
             try:
                 src = create_paymongo_source("gcash", FEE_PHP)
+            except requests.HTTPError as e:
+                code = ""
+                try:
+                    code = e.response.json()["errors"][0]["code"]
+                except Exception:
+                    pass
+                if code == "payment_method_not_configured":
+                    st.warning("PayMongo key works, but this org isn't activated for GCash yet "
+                               "(dashboard → payment methods → enable GCash). Using the local QR below.")
+                else:
+                    st.warning(f"PayMongo declined ({code or 'error'}) — using the local QR below.")
             except requests.RequestException as e:
                 st.warning(f"PayMongo unreachable ({e.__class__.__name__}) — using local QR.")
         if src:
@@ -610,9 +663,43 @@ tab1, tab2, tab3 = st.tabs(["1 · Business Owner", "2 · Bank / Investor", "3 ·
 
 # ─────────────────────────────── Page 1 ────────────────────────────────────
 with tab1:
+    hero_bg = "url('app/static/hero.jpg'), " if os.path.exists(HERO_IMG_PATH) else ""
+    st.markdown(
+        f"""
+        <div class="hero" style="background-image:
+          linear-gradient(155deg, rgba(4,18,10,0.42), rgba(4,18,10,0.88)), {hero_bg}
+          radial-gradient(120% 120% at 18% 0%, rgba(47,213,117,0.30), transparent 55%),
+          radial-gradient(130% 140% at 92% 112%, rgba(212,175,55,0.20), transparent 55%),
+          linear-gradient(160deg, #0d2418, #07130d);">
+          <div class="hero-kicker">FINANCIAL INCLUSION · ONE RECEIPT AT A TIME</div>
+          <div class="hero-title">Your sale. Your phone.<br>Your money — today.</div>
+          <div class="hero-sub">No collateral. No credit line. Your receipt is the collateral.</div>
+          <div class="hero-receipt">
+            <div class="hr-row"><span>Smart Receipt · ECI-2026-0001</span><span>PAID ⚡</span></div>
+            <div class="hr-amount">₱97,000 — available today</div>
+            <span class="hr-tag">LOCAL AI VERIFIED · LAYER 0 SEALED</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.markdown("## 🧾 Sovereign Estate Auditor")
     st.markdown('<span class="muted">Everything below runs on this device. '
                 'Your sales details never touch the internet.</span>', unsafe_allow_html=True)
+
+    v1, v2, v3 = st.columns(3)
+    v1.markdown('<div class="vp-card"><div class="vp-ico">🔒</div><div class="vp-t">Private</div>'
+                '<div class="vp-d">AI runs on your device — your books never leave</div></div>',
+                unsafe_allow_html=True)
+    v2.markdown('<div class="vp-card"><div class="vp-ico">⚡</div><div class="vp-t">Fast</div>'
+                '<div class="vp-d">Cash offer in seconds, not weeks</div></div>',
+                unsafe_allow_html=True)
+    v3.markdown('<div class="vp-card"><div class="vp-ico">💸</div><div class="vp-t">Earns</div>'
+                '<div class="vp-d">Paid every time your data is viewed</div></div>',
+                unsafe_allow_html=True)
+
+    st.markdown('<div class="steps"><b>1</b> Describe your sale &nbsp;→&nbsp; <b>2</b> See your cash offer '
+                '&nbsp;→&nbsp; <b>3</b> Lock it in your vault</div>', unsafe_allow_html=True)
 
     desc = st.text_area(
         "Describe the sale or work you did",
@@ -645,9 +732,10 @@ with tab1:
     rec = st.session_state.receipt
     if rec:
         if st.session_state.ai_mode == "demo":
-            st.info("⚡ Demo Mode: local AI (Ollama) wasn't reachable, so a built-in "
-                    "underwriter produced this receipt. Install Ollama + `ollama pull llama3` "
-                    "for the full offline model.", icon="🛟")
+            st.info("⚡ Demo Mode: the on-device AI couldn't load right now (it needs ~1–2 GB free RAM), "
+                    "so a built-in underwriter produced this receipt. Close heavy apps or restart the PC, "
+                    "then press **Run Local AI** again — full llama3.2 runs completely on this device.",
+                    icon="🛟")
         else:
             st.success(f"🟢 Local AI online — {st.session_state.ai_mode} answered on this device.", icon="🔌")
 
@@ -797,3 +885,6 @@ with tab3:
         st.info("No settlement yet. Open **2 · Bank / Investor**, query a Smart Receipt, "
                 "and pay through any rail — the moment it clears, the Data Dividend "
                 "lands in the business owner's wallet and the full receipt is visible here.")
+
+st.markdown('<div class="steps">0.Device · Team ISET — financial inclusion, one receipt at a time.</div>',
+            unsafe_allow_html=True)

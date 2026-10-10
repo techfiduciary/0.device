@@ -7,3 +7,6 @@ textColor = "#e8f5ee"
 
 [browser]
 gatherUsageStats = false
+
+[server]
+enableStaticServing = true
